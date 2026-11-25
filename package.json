@@ -1,0 +1,41 @@
+{
+  "name": "frontier-local-mcp",
+  "version": "1.0.0",
+  "description": "Read-only MCP server that tails local EVE Frontier client log files.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "frontier-local-mcp": "./dist/server.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "tsx --test --test-reporter spec test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raceee/frontier-local-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "eve-frontier",
+    "stdio"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
