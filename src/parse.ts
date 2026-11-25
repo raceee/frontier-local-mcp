@@ -69,10 +69,16 @@ export type FrontierEvent =
 
 const STAMP = /^\[ (\d{4})\.(\d{2})\.(\d{2}) (\d{2}):(\d{2}):(\d{2}) \]/;
 const GAME_LINE = /^\[ [\d. :]+ \] \((\w+)\) (.*)$/;
-// Anchored to the timestamp. Optional `EVE System >` sender is unverified.
-// Any other `Name >` sender is treated as player chat and ignored.
-const LOCAL_CHANNEL =
-  /^\[ [\d. :]+ \] (?:EVE System > )?Channel changed to Local : ([^>\n]+)$/;
+// Anchored to the timestamp. System senders are an explicit allowlist:
+// `Keeper` is confirmed from a live client Local log; `EVE System` is
+// still unverified. Any other `Name >` sender is treated as player chat.
+export const LOCAL_SYSTEM_SENDERS = ["Keeper", "EVE System"] as const;
+const LOCAL_SENDER_ALT = LOCAL_SYSTEM_SENDERS.map((name) =>
+  name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+).join("|");
+const LOCAL_CHANNEL = new RegExp(
+  `^\\[ [\\d. :]+ \\] (?:(?:${LOCAL_SENDER_ALT}) > )?Channel changed to Local : ([^>\\n]+)$`,
+);
 const MINING = /^You mined (\d+) units of (.+)$/;
 const COMBAT_HIT = /^(\d+)\s+(from|to)\b/;
 const COMBAT_MISS = /misses you completely/;

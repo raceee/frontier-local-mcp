@@ -77,6 +77,12 @@ describe("privacy: combat names and Local chat bodies never leak", () => {
     );
     assert.equal(spoofed, null);
     assert.equal(JSON.stringify(spoofed)?.includes("SPOOFED") ?? false, false);
+    assert.equal(
+      parseLocalLine(
+        "[ 2026.11.21 19:12:00 ] SomePlayer > Channel changed to Local : SPOOFED",
+      ),
+      null,
+    );
   });
 
   it("tailer public snapshots never include names or chat text", async () => {

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { describe, it } from "node:test";
 import {
+  LOCAL_SYSTEM_SENDERS,
   parseGameLine,
   parseLocalLine,
   stripTags,
@@ -97,11 +98,51 @@ describe("parse recorded fixture lines", () => {
     assert.equal(event, null);
     assert.equal(JSON.stringify(event), "null");
 
+    assert.equal(
+      parseLocalLine(
+        "[ 2026.11.21 19:12:00 ] SomePlayer > Channel changed to Local : SPOOFED",
+      ),
+      null,
+    );
+
     const prefixUnverified =
       "[ 2026.11.21 19:11:56 ] EVE System > Channel changed to Local : K.4RD.T72";
     const prefixed = parseLocalLine(prefixUnverified);
     assert.equal(prefixed?.kind, "jump");
     assert.equal(prefixed?.system, "K.4RD.T72");
+  });
+
+  it("accepts the live Keeper system sender and pipe-form system names", async () => {
+    assert.deepEqual([...LOCAL_SYSTEM_SENDERS], ["Keeper", "EVE System"]);
+    const live = (
+      await fs.readFile(
+        new URL("../fixtures/recorded/local-keeper.txt", import.meta.url),
+        "utf8",
+      )
+    )
+      .split(/\r?\n/)
+      .find((line) => line.includes("Channel changed"));
+    assert.equal(
+      live,
+      "[ 2026.11.17 06:17:05 ] Keeper > Channel changed to Local : GES|V11",
+    );
+    const event = parseLocalLine(live!);
+    assert.equal(event?.kind, "jump");
+    assert.equal(event?.system, "GES|V11");
+    assert.equal(event?.at, Date.UTC(2026, 10, 17, 6, 17, 5));
+
+    assert.equal(
+      parseLocalLine(
+        "[ 2026.11.17 06:18:00 ] Keeper > Channel changed to Local : G48|L11",
+      )?.system,
+      "G48|L11",
+    );
+    assert.equal(
+      parseLocalLine(
+        "[ 2026.11.17 06:19:00 ] Keeper > Channel changed to Local : DI7|021",
+      )?.system,
+      "DI7|021",
+    );
   });
 
   it("requires (mining) and (combat) channel tags", () => {

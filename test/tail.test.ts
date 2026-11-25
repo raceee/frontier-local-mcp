@@ -84,6 +84,23 @@ describe("log tailer", () => {
     assert.equal(tailer.getLocation().jumpsThisSession, 1);
   });
 
+  it("recovers location from a live Keeper Local line with a pipe system name", async () => {
+    const tree = await makeLogsTree();
+    await fs.writeFile(
+      path.join(tree.chat, "Local_20261117061705.txt"),
+      utf16leWithBom(
+        "[ 2026.11.17 06:17:05 ] Keeper > Channel changed to Local : GES|V11\n",
+      ),
+    );
+    const tailer = new FrontierLogTailer({ logsDir: tree.root, pollMs: 40 });
+    tailers.push(tailer);
+    await tailer.start();
+    const location = tailer.getLocation();
+    assert.equal(location.system, "GES|V11");
+    assert.equal(location.jumpsThisSession, 0);
+    assert.equal(location.source, "Local log");
+  });
+
   it("does not treat a spoofed Local chat body as a jump", async () => {
     const tree = await makeLogsTree();
     await fs.writeFile(

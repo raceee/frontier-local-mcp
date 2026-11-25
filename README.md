@@ -13,7 +13,7 @@ This is an unofficial fan project. EVE Frontier and related marks belong to thei
 ## Trust lines
 
 - **Read-only.** The server only reads log files the client writes to disk. It never writes to those files.
-- **No chat bodies.** Local chat is used only for the `Channel changed to Local : …` line, anchored after the timestamp. An optional `EVE System >` sender prefix is accepted but **unverified** against a live client log, and it is indistinguishable from a player whose display name is `EVE System`. Any other `Name >` sender is ignored even if the message quotes the channel-change phrase. Message text is discarded.
+- **No chat bodies.** Local chat is used only for the `Channel changed to Local : …` line, anchored after the timestamp. Allowed system senders are an explicit allowlist: `Keeper` (confirmed from a live client log) and, optionally, no sender or `EVE System >` (`EVE System` is still **unverified** and indistinguishable from a player with that display name). Any other `Name >` sender is ignored even if the message quotes the channel-change phrase. Message text is discarded. System names may include a pipe (`GES|V11`).
 - **No combat names in v1.** Combat events return damage numbers and direction (`from` / `to` / `miss`) only. Attacker and target names are not returned.
 - **System names only.** No ids, coordinates, or other location identifiers.
 - **No network, no telemetry.** The process does not open sockets, call home, or send usage data.
@@ -42,7 +42,7 @@ macOS / Linux default: `~/Documents/Frontier/logs` (**unverified** — pass `--l
 
 | Folder | Files | Encoding | What we take |
 | --- | --- | --- | --- |
-| `Chatlogs/` | `Local_*` | UTF-16LE with BOM | Channel-change line only |
+| `Chatlogs/` | `Local_*` | UTF-16LE with BOM | Channel-change line only (`Keeper > Channel changed to Local : …`) |
 | `Gamelogs/` | names starting with a digit | UTF-8 | mining, combat, cargo, self-destruct, link lost, low charge |
 
 The server tails the newest 3 files in each folder. UTF-16 reads are trimmed to an even byte count. Reads are capped at 64KiB per poll; at startup the newest Local log is drained to EOF before jump counting begins, so recovering the current system does not count as a jump. A log line longer than 64KiB (including a completed line whose newline arrives on a later poll) is dropped and is not parsed as an event.
