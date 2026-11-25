@@ -1,0 +1,3 @@
+[ 2026.11.21 19:10:00 ] Channel changed to Local : K.4RD.T72
+[ 2026.11.21 19:11:56 ] Channel changed to Local : E.9QF.L15
+[ 2026.11.21 19:12:00 ] SomePlayer > LEAKME_CHAT_BODY_UNIQUE please ignore
