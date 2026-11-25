@@ -13,7 +13,7 @@ This is an unofficial fan project. EVE Frontier and related marks belong to thei
 ## Trust lines
 
 - **Read-only.** The server only reads log files the client writes to disk. It never writes to those files.
-- **No chat bodies.** Local chat is used only for the `Channel changed to Local : …` line. Message text is discarded.
+- **No chat bodies.** Local chat is used only for the `Channel changed to Local : …` line, anchored after the timestamp (optional unverified `EVE System >` prefix). Player `Name >` lines are ignored even if they quote that phrase. Message text is discarded.
 - **No combat names in v1.** Combat events return damage numbers and direction (`from` / `to` / `miss`) only. Attacker and target names are not returned.
 - **System names only.** No ids, coordinates, or other location identifiers.
 - **No network, no telemetry.** The process does not open sockets, call home, or send usage data.

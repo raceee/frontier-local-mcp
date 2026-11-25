@@ -71,6 +71,12 @@ describe("privacy: combat names and Local chat bodies never leak", () => {
       assertNoLeak(event, "local event");
     }
     assert.equal(JSON.stringify(parsed).includes("LEAKME_CHAT_BODY_UNIQUE"), false);
+
+    const spoofed = parseLocalLine(
+      "[ 2026.11.21 19:12:00 ] SomePlayer > LOL Channel changed to Local : SPOOFED",
+    );
+    assert.equal(spoofed, null);
+    assert.equal(JSON.stringify(spoofed)?.includes("SPOOFED") ?? false, false);
   });
 
   it("tailer public snapshots never include names or chat text", async () => {
@@ -79,15 +85,15 @@ describe("privacy: combat names and Local chat bodies never leak", () => {
       path.join(tree.chat, "Local_20261121191000.txt"),
       utf16leWithBom(await fs.readFile(RECORDED_LOCAL, "utf8")),
     );
-    await fs.writeFile(
-      path.join(tree.game, "20261121191156.txt"),
-      await fs.readFile(RECORDED_GAME),
-    );
+    const gameFile = path.join(tree.game, "20261121191156.txt");
+    await fs.writeFile(gameFile, "");
 
     const tailer = new FrontierLogTailer({ logsDir: tree.root, pollMs: 40 });
     tailers.push(tailer);
     await tailer.start();
-    await waitUntil(() => tailer.getRecentEvents().length > 0);
+    await waitUntil(() => tailer.getLocation().system === "E.9QF.L15");
+    await fs.appendFile(gameFile, await fs.readFile(RECORDED_GAME));
+    await waitUntil(() => tailer.getRecentEvents({ kinds: ["combat"] }).length > 0);
 
     const snapshot = {
       location: tailer.getLocation(),

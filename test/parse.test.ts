@@ -90,6 +90,39 @@ describe("parse recorded fixture lines", () => {
     assert.equal(parsed[2], null);
   });
 
+  it("rejects a player chat line that spoofs a Local channel change", () => {
+    const spoofed =
+      "[ 2026.11.21 19:12:00 ] SomePlayer > LOL Channel changed to Local : SPOOFED";
+    const event = parseLocalLine(spoofed);
+    assert.equal(event, null);
+    assert.equal(JSON.stringify(event), "null");
+
+    const prefixUnverified =
+      "[ 2026.11.21 19:11:56 ] EVE System > Channel changed to Local : K.4RD.T72";
+    const prefixed = parseLocalLine(prefixUnverified);
+    assert.equal(prefixed?.kind, "jump");
+    assert.equal(prefixed?.system, "K.4RD.T72");
+  });
+
+  it("requires (mining) and (combat) channel tags", () => {
+    assert.equal(
+      parseGameLine("[ 2026.11.21 19:11:56 ] (notify) 5 from the station manager"),
+      null,
+    );
+    assert.equal(
+      parseGameLine("[ 2026.11.21 19:11:56 ] (notify) You mined 999 units of FakeOre"),
+      null,
+    );
+    assert.equal(
+      parseGameLine("[ 2026.11.21 19:11:56 ] (mining) You mined 7 units of Hoarfrost")?.kind,
+      "mining",
+    );
+    assert.equal(
+      parseGameLine("[ 2026.11.21 19:11:56 ] (combat) 119 from NobodyInParticular")?.kind,
+      "combat",
+    );
+  });
+
   it("ignores game-log lines that do not match a known event", () => {
     assert.equal(
       parseGameLine("[ 2026.11.21 19:11:56 ] (info) Some unrelated client notice"),

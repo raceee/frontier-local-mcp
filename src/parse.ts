@@ -69,7 +69,10 @@ export type FrontierEvent =
 
 const STAMP = /^\[ (\d{4})\.(\d{2})\.(\d{2}) (\d{2}):(\d{2}):(\d{2}) \]/;
 const GAME_LINE = /^\[ [\d. :]+ \] \((\w+)\) (.*)$/;
-const LOCAL_CHANNEL = /Channel changed to Local : (.+)$/;
+// Anchored to the timestamp. Optional `EVE System >` sender is unverified.
+// Any other `Name >` sender is treated as player chat and ignored.
+const LOCAL_CHANNEL =
+  /^\[ [\d. :]+ \] (?:EVE System > )?Channel changed to Local : ([^>\n]+)$/;
 const MINING = /^You mined (\d+) units of (.+)$/;
 const COMBAT_HIT = /^(\d+)\s+(from|to)\b/;
 const COMBAT_MISS = /misses you completely/;
@@ -116,10 +119,12 @@ export function parseGameLine(raw: string): FrontierEvent | null {
   if (!match) return null;
   const at = parseTimestamp(line);
   if (at === null) return null;
+  const channel = match[1];
   const message = stripTags(match[2]).trim();
 
   const mined = MINING.exec(message);
   if (mined) {
+    if (channel !== "mining") return null;
     return {
       kind: "mining",
       at,
@@ -130,6 +135,7 @@ export function parseGameLine(raw: string): FrontierEvent | null {
 
   const hit = COMBAT_HIT.exec(message);
   if (hit) {
+    if (channel !== "combat") return null;
     const direction = hit[2] as "from" | "to";
     return {
       kind: "combat",
@@ -140,6 +146,7 @@ export function parseGameLine(raw: string): FrontierEvent | null {
   }
 
   if (COMBAT_MISS.test(message)) {
+    if (channel !== "combat") return null;
     return { kind: "combat", at, direction: "miss" };
   }
 

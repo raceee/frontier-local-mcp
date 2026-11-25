@@ -36,7 +36,7 @@ describe("MCP protocol smoke test", { timeout: 30_000 }, () => {
       utf16leWithBom(await fs.readFile(RECORDED_LOCAL, "utf8")),
     );
     const gameFile = path.join(tree.game, "20261121191156.txt");
-    await fs.writeFile(gameFile, await fs.readFile(RECORDED_GAME));
+    await fs.writeFile(gameFile, "");
 
     const tsxCli = path.join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
     const serverPath = path.join(REPO_ROOT, "src", "server.ts");
@@ -64,20 +64,27 @@ describe("MCP protocol smoke test", { timeout: 30_000 }, () => {
     assert.equal(location.source, "Local log");
     assert.equal(location.jumpsThisSession, 0);
 
-    const eventsResult = await client.callTool({
-      name: "get_recent_events",
-      arguments: { kinds: ["mining", "combat"], limit: 10 },
-    });
-    const events = JSON.parse(textOf(eventsResult));
-    assert.equal(Array.isArray(events.events), true);
-    assert.ok(events.events.some((event: { kind: string }) => event.kind === "mining"));
-    assert.equal(JSON.stringify(events).includes("Zx9AttackerNom"), false);
-
     const statusResult = await client.callTool({ name: "get_status", arguments: {} });
     const status = JSON.parse(textOf(statusResult));
     assert.equal(status.found, true);
     assert.equal(status.logsDir, tree.root);
     assert.equal(typeof status.parserVersion, "string");
+
+    await fs.appendFile(gameFile, await fs.readFile(RECORDED_GAME));
+    const deadline = Date.now() + 4000;
+    let events: { events: Array<{ kind: string }> } = { events: [] };
+    while (Date.now() < deadline) {
+      const eventsResult = await client.callTool({
+        name: "get_recent_events",
+        arguments: { kinds: ["mining", "combat"], limit: 10 },
+      });
+      events = JSON.parse(textOf(eventsResult));
+      if (events.events.some((event) => event.kind === "mining")) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(Array.isArray(events.events), true);
+    assert.ok(events.events.some((event) => event.kind === "mining"));
+    assert.equal(JSON.stringify(events).includes("Zx9AttackerNom"), false);
 
     const summaryResult = await client.callTool({
       name: "get_session_summary",

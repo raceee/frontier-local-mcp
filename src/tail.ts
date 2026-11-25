@@ -57,6 +57,17 @@ type FileState = {
   encoding: Encoding;
   offset: number;
   rest: string;
+  decoder: InstanceType<typeof TextDecoder>;
+  lastSize: number;
+  ino: number | bigint;
+  header: Buffer;
+  tail: Buffer;
+  dropUntilNewline: boolean;
+};
+
+type StoredEvent = {
+  seq: number;
+  event: FrontierEvent;
 };
 
 type FolderSpec = {
@@ -82,8 +93,12 @@ const DEFAULT_POLL_MS = 250;
 const DEFAULT_STALE_MS = 120_000;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
-const MAX_EVENTS = 2000;
+export const MAX_EVENTS = 2000;
 const NEWEST_PER_FOLDER = 3;
+const READ_CHUNK = 64 * 1024;
+const MAX_REST = 64 * 1024;
+const HEADER_BYTES = 64;
+const TAIL_BYTES = 8;
 
 function pathFor(platform: NodeJS.Platform): path.PlatformPath {
   return platform === "win32" ? path.win32 : path.posix;
@@ -139,6 +154,34 @@ function toIso(ms: number | null): string | null {
   return ms === null ? null : new Date(ms).toISOString();
 }
 
+function asNumber(value: number | bigint): number {
+  return typeof value === "bigint" ? Number(value) : value;
+}
+
+function evenLength(length: number, encoding: Encoding): number {
+  if (encoding !== "utf-16le") return length;
+  return length - (length % 2);
+}
+
+function newDecoder(encoding: Encoding): InstanceType<typeof TextDecoder> {
+  return new TextDecoder(encoding, { fatal: false });
+}
+
+async function readSlice(
+  handle: fs.FileHandle,
+  position: number,
+  length: number,
+): Promise<Buffer> {
+  if (length <= 0) return Buffer.alloc(0);
+  const buf = Buffer.alloc(length);
+  const { bytesRead } = await handle.read(buf, 0, length, position);
+  return buf.subarray(0, bytesRead);
+}
+
+async function readHeader(handle: fs.FileHandle, size: number): Promise<Buffer> {
+  return readSlice(handle, 0, Math.min(HEADER_BYTES, Math.max(0, size)));
+}
+
 export class FrontierLogTailer {
   readonly logsDir: string;
   readonly pollMs: number;
@@ -147,7 +190,8 @@ export class FrontierLogTailer {
   readonly pathVerified: boolean;
   private readonly now: () => number;
   private readonly files = new Map<string, FileState>();
-  private readonly events: FrontierEvent[] = [];
+  private readonly events: StoredEvent[] = [];
+  private nextSeq = 0;
   private timer: NodeJS.Timeout | null = null;
   private polling = false;
   private booted = false;
@@ -213,11 +257,13 @@ export class FrontierLogTailer {
     const kinds = options.kinds;
     const sinceMs = options.sinceMs;
     const limit = Math.min(Math.max(options.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
-    const filtered = this.events.filter((event) => {
-      if (kinds && kinds.length > 0 && !kinds.includes(event.kind)) return false;
-      if (sinceMs !== undefined && event.at < sinceMs) return false;
-      return true;
-    });
+    const filtered = this.events
+      .map((stored) => stored.event)
+      .filter((event) => {
+        if (kinds && kinds.length > 0 && !kinds.includes(event.kind)) return false;
+        if (sinceMs !== undefined && event.at < sinceMs) return false;
+        return true;
+      });
     return filtered.slice(-limit);
   }
 
@@ -227,16 +273,21 @@ export class FrontierLogTailer {
   }): Promise<FrontierEvent | null> {
     const kinds = options.kinds.filter((kind) => (EVENT_KINDS as readonly string[]).includes(kind));
     const timeoutMs = Math.min(Math.max(options.timeoutMs, 0), 120_000);
-    const startIndex = this.events.length;
+    const startSeq = this.nextSeq;
     const deadline = this.now() + timeoutMs;
     while (this.now() < deadline) {
-      const found = this.events.slice(startIndex).find((event) => kinds.includes(event.kind));
-      if (found) return found;
+      const found = this.events.find(
+        (stored) => stored.seq >= startSeq && kinds.includes(stored.event.kind),
+      );
+      if (found) return found.event;
       const remaining = deadline - this.now();
       if (remaining <= 0) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(this.pollMs, remaining)));
     }
-    return this.events.slice(startIndex).find((event) => kinds.includes(event.kind)) ?? null;
+    return (
+      this.events.find((stored) => stored.seq >= startSeq && kinds.includes(stored.event.kind))
+        ?.event ?? null
+    );
   }
 
   getSessionSummary(): SessionSummary {
@@ -248,7 +299,7 @@ export class FrontierLogTailer {
       link_lost: null,
       low_charge: null,
     };
-    for (const event of this.events) {
+    for (const { event } of this.events) {
       if (event.kind === "mining") {
         mining[event.ore] = (mining[event.ore] ?? 0) + event.units;
       } else if (event.kind === "combat") {
@@ -316,6 +367,20 @@ export class FrontierLogTailer {
     }
   }
 
+  private replayFromStart(spec: FolderSpec, newestInFolder: boolean): boolean {
+    return !this.booted && spec.folder === "Chatlogs" && newestInFolder;
+  }
+
+  private resetState(state: FileState, encoding: Encoding): void {
+    state.offset = 0;
+    state.rest = "";
+    state.decoder = newDecoder(encoding);
+    state.dropUntilNewline = false;
+    state.lastSize = 0;
+    state.header = Buffer.alloc(0);
+    state.tail = Buffer.alloc(0);
+  }
+
   private async followFile(
     spec: FolderSpec,
     name: string,
@@ -323,64 +388,113 @@ export class FrontierLogTailer {
     newestInFolder: boolean,
   ): Promise<void> {
     const absPath = path.join(this.logsDir, spec.folder, name);
-    let state = this.files.get(relPath);
-    if (!state) {
-      let offset = 0;
-      // At startup, only the newest Local log is replayed to recover the current
-      // system. Older Local files are followed from EOF so they cannot overwrite it.
-      if (!this.booted && spec.folder === "Chatlogs" && !newestInFolder) {
-        try {
-          const size = (await fs.stat(absPath)).size;
-          offset = spec.encoding === "utf-16le" ? size - (size % 2) : size;
-        } catch {
-          return;
-        }
-      }
-      state = { relPath, encoding: spec.encoding, offset, rest: "" };
-      this.files.set(relPath, state);
-    }
-    let stat;
+    let stat: Awaited<ReturnType<typeof fs.stat>>;
     try {
       stat = await fs.stat(absPath);
     } catch {
       this.files.delete(relPath);
       return;
     }
-    if (stat.size < state.offset) {
-      state.offset = 0;
-      state.rest = "";
-    }
-    let end = stat.size;
-    if (spec.encoding === "utf-16le") {
-      const available = stat.size - state.offset;
-      const even = available - (available % 2);
-      if (even <= 0) return;
-      end = state.offset + even;
-    }
-    if (end <= state.offset) return;
 
-    const length = end - state.offset;
-    const buf = Buffer.alloc(length);
+    const size = asNumber(stat.size);
     const handle = await fs.open(absPath, "r");
     try {
-      const { bytesRead } = await handle.read(buf, 0, length, state.offset);
+      let state = this.files.get(relPath);
+      if (!state) {
+        const startAtEof = !this.booted && !this.replayFromStart(spec, newestInFolder);
+        const offset = startAtEof ? evenLength(size, spec.encoding) : 0;
+        state = {
+          relPath,
+          encoding: spec.encoding,
+          offset,
+          rest: "",
+          decoder: newDecoder(spec.encoding),
+          lastSize: size,
+          ino: stat.ino,
+          header: await readHeader(handle, size),
+          tail: Buffer.alloc(0),
+          dropUntilNewline: false,
+        };
+        this.files.set(relPath, state);
+      } else if (await this.fileWasReplaced(state, stat, handle)) {
+        this.resetState(state, spec.encoding);
+        state.ino = stat.ino;
+        state.header = await readHeader(handle, size);
+      }
+
+      let end = evenLength(size, spec.encoding);
+      if (end <= state.offset) {
+        state.lastSize = size;
+        return;
+      }
+      const available = evenLength(Math.min(end - state.offset, READ_CHUNK), spec.encoding);
+      if (available <= 0) {
+        state.lastSize = size;
+        return;
+      }
+
+      const buf = Buffer.alloc(available);
+      const { bytesRead } = await handle.read(buf, 0, available, state.offset);
       state.offset += bytesRead;
-      const decoded = new TextDecoder(spec.encoding).decode(buf.subarray(0, bytesRead));
+      let decoded = state.decoder.decode(buf.subarray(0, bytesRead), { stream: true });
+      if (state.dropUntilNewline) {
+        const newline = decoded.indexOf("\n");
+        if (newline < 0) {
+          state.lastSize = size;
+          return;
+        }
+        decoded = decoded.slice(newline + 1);
+        state.dropUntilNewline = false;
+      }
       const combined = state.rest + decoded;
       const pieces = combined.split("\n");
       state.rest = pieces.pop() ?? "";
+      if (state.rest.length > MAX_REST) {
+        state.rest = "";
+        state.dropUntilNewline = true;
+      }
       for (const piece of pieces) {
         this.ingest(piece, spec.folder);
       }
+      if (state.offset === bytesRead) {
+        state.header = await readHeader(handle, size);
+      }
+      if (state.offset >= TAIL_BYTES) {
+        state.tail = await readSlice(handle, state.offset - TAIL_BYTES, TAIL_BYTES);
+      }
+      state.lastSize = size;
     } finally {
       await handle.close();
     }
   }
 
+  private async fileWasReplaced(
+    state: FileState,
+    stat: Awaited<ReturnType<typeof fs.stat>>,
+    handle: fs.FileHandle,
+  ): Promise<boolean> {
+    const size = asNumber(stat.size);
+    if (size < state.offset) return true;
+    if (size < state.lastSize) return true;
+    if (String(state.ino) !== "0" && String(stat.ino) !== "0" && String(state.ino) !== String(stat.ino)) {
+      return true;
+    }
+    if (state.offset === 0) return false;
+    const header = await readHeader(handle, size);
+    if (state.header.length > 0 && header.length > 0) {
+      const n = Math.min(state.header.length, header.length);
+      if (!state.header.subarray(0, n).equals(header.subarray(0, n))) return true;
+    }
+    if (state.offset >= TAIL_BYTES && state.tail.length === TAIL_BYTES) {
+      const tail = await readSlice(handle, state.offset - TAIL_BYTES, TAIL_BYTES);
+      if (!tail.equals(state.tail)) return true;
+    }
+    return false;
+  }
+
   private ingest(raw: string, folder: FolderSpec["folder"]): void {
     this.lastSeenWallMs = this.now();
-    const event =
-      folder === "Chatlogs" ? parseLocalLine(raw) : parseGameLine(raw);
+    const event = folder === "Chatlogs" ? parseLocalLine(raw) : parseGameLine(raw);
     if (!event) return;
     this.lastLineAtMs = event.at;
     if (event.kind === "jump") {
@@ -388,7 +502,8 @@ export class FrontierLogTailer {
       this.system = event.system;
       this.sinceMs = event.at;
     }
-    this.events.push(event);
+    this.events.push({ seq: this.nextSeq, event });
+    this.nextSeq += 1;
     if (this.events.length > MAX_EVENTS) {
       this.events.splice(0, this.events.length - MAX_EVENTS);
     }
