@@ -202,6 +202,14 @@ export class FrontierLogTailer {
   private lastSeenWallMs: number | null = null;
   private lastLineAtMs: number | null = null;
   private filesTailed: string[] = [];
+  private miningTotals: Record<string, number> = {};
+  private lastCombat: CombatEvent | null = null;
+  private lastAlerts: SessionSummary["lastAlerts"] = {
+    cargo_full: null,
+    self_destruct: null,
+    link_lost: null,
+    low_charge: null,
+  };
 
   constructor(options: {
     logsDir: string;
@@ -220,7 +228,11 @@ export class FrontierLogTailer {
   }
 
   async start(): Promise<void> {
-    await this.poll();
+    let rounds = 0;
+    do {
+      await this.poll();
+      rounds += 1;
+    } while (this.newestLocalHasUnread() && rounds < 1024);
     this.booted = true;
     if (this.lastSeenWallMs === null) this.lastSeenWallMs = this.now();
     this.timer = setInterval(() => {
@@ -291,24 +303,11 @@ export class FrontierLogTailer {
   }
 
   getSessionSummary(): SessionSummary {
-    const mining: Record<string, number> = {};
-    let lastCombat: CombatEvent | null = null;
-    const lastAlerts: SessionSummary["lastAlerts"] = {
-      cargo_full: null,
-      self_destruct: null,
-      link_lost: null,
-      low_charge: null,
+    return {
+      mining: { ...this.miningTotals },
+      lastCombat: this.lastCombat,
+      lastAlerts: { ...this.lastAlerts },
     };
-    for (const { event } of this.events) {
-      if (event.kind === "mining") {
-        mining[event.ore] = (mining[event.ore] ?? 0) + event.units;
-      } else if (event.kind === "combat") {
-        lastCombat = event;
-      } else if (event.kind in lastAlerts) {
-        lastAlerts[event.kind as keyof typeof lastAlerts] = event;
-      }
-    }
-    return { mining, lastCombat, lastAlerts };
   }
 
   getStatus(): StatusSnapshot {
@@ -369,6 +368,14 @@ export class FrontierLogTailer {
 
   private replayFromStart(spec: FolderSpec, newestInFolder: boolean): boolean {
     return !this.booted && spec.folder === "Chatlogs" && newestInFolder;
+  }
+
+  private newestLocalHasUnread(): boolean {
+    const newest = this.filesTailed.find((relPath) => relPath.startsWith("Chatlogs/"));
+    if (!newest) return false;
+    const state = this.files.get(newest);
+    if (!state) return false;
+    return state.offset < evenLength(state.lastSize, state.encoding);
   }
 
   private resetState(state: FileState, encoding: Encoding): void {
@@ -449,11 +456,12 @@ export class FrontierLogTailer {
       const combined = state.rest + decoded;
       const pieces = combined.split("\n");
       state.rest = pieces.pop() ?? "";
-      if (state.rest.length > MAX_REST) {
+      if (state.rest.length >= MAX_REST) {
         state.rest = "";
         state.dropUntilNewline = true;
       }
       for (const piece of pieces) {
+        if (piece.length > MAX_REST) continue;
         this.ingest(piece, spec.folder);
       }
       if (state.offset === bytesRead) {
@@ -501,6 +509,12 @@ export class FrontierLogTailer {
       if (this.booted && event.system !== this.system) this.jumpsThisSession += 1;
       this.system = event.system;
       this.sinceMs = event.at;
+    } else if (event.kind === "mining") {
+      this.miningTotals[event.ore] = (this.miningTotals[event.ore] ?? 0) + event.units;
+    } else if (event.kind === "combat") {
+      this.lastCombat = event;
+    } else if (event.kind in this.lastAlerts) {
+      this.lastAlerts[event.kind as keyof typeof this.lastAlerts] = event;
     }
     this.events.push({ seq: this.nextSeq, event });
     this.nextSeq += 1;

@@ -237,4 +237,60 @@ describe("log tailer", () => {
     );
     await waitUntil(() => tailer.getSessionSummary().mining.NewOre === 12);
   });
+
+  it(
+    "drains a newest Local file larger than 64KiB before counting jumps",
+    { timeout: 15_000 },
+    async () => {
+      const tree = await makeLogsTree();
+      const pad = `[ 2026.11.21 19:05:00 ] PadPlayer > ${"x".repeat(80)}\n`;
+      let body = "[ 2026.11.21 19:00:00 ] Channel changed to Local : FIRST.SYS\n";
+      const tail = "[ 2026.11.21 19:11:56 ] Channel changed to Local : CUR.SYS\n";
+      while (utf16leWithBom(body + tail).length < 82 * 1024) {
+        body += pad;
+      }
+      const encoded = utf16leWithBom(body + tail);
+      assert.ok(encoded.length > 64 * 1024);
+      await fs.writeFile(path.join(tree.chat, "Local_20261121190000.txt"), encoded);
+
+      const tailer = new FrontierLogTailer({ logsDir: tree.root, pollMs: 40 });
+      tailers.push(tailer);
+      await tailer.start();
+      const location = tailer.getLocation();
+      assert.equal(location.system, "CUR.SYS");
+      assert.equal(location.jumpsThisSession, 0);
+    },
+  );
+
+  it(
+    "keeps session mining totals and lastCombat after more than 2000 events",
+    { timeout: 20_000 },
+    async () => {
+      const tree = await makeLogsTree();
+      const file = path.join(tree.game, "20261121190000.txt");
+      await fs.writeFile(file, "");
+      const tailer = new FrontierLogTailer({ logsDir: tree.root, pollMs: 40 });
+      tailers.push(tailer);
+      await tailer.start();
+
+      await fs.appendFile(
+        file,
+        "[ 2026.11.21 19:11:00 ] (combat) 119 from NobodyInParticular\n",
+      );
+      await waitUntil(() => tailer.getSessionSummary().lastCombat?.damage === 119);
+
+      const filler = Array.from(
+        { length: 2101 },
+        () => "[ 2026.11.21 19:11:56 ] (mining) You mined 1 units of KeepOre\n",
+      ).join("");
+      await fs.appendFile(file, filler);
+      await waitUntil(() => tailer.getSessionSummary().mining.KeepOre === 2101, 15_000);
+
+      const summary = tailer.getSessionSummary();
+      assert.equal(summary.mining.KeepOre, 2101);
+      assert.equal(summary.lastCombat?.kind, "combat");
+      assert.equal(summary.lastCombat?.damage, 119);
+      assert.equal(JSON.stringify(summary.lastCombat).includes("NobodyInParticular"), false);
+    },
+  );
 });
